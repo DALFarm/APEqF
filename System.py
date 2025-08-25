@@ -1,5 +1,6 @@
-# === System.py (APEqF version) ===
-# State and input definitions for APEqF (SE23 navigation + se3 biases + lever arm + magnetometer extrinsic)
+# === System.py (APEqF version - Pure Equivariant Implementation) ===
+# State and input definitions for APEqF with only equivariant measurement models
+# Backward compatibility functions removed for clarity
 
 import numpy as np
 from dataclasses import dataclass
@@ -92,39 +93,95 @@ class InputSpace:
 # Xi_0
 xi_0 = State()
 
-# Measurement functions (GNSS position incl. lever arm; optional bias)
-def measurePos(xi: State) -> np.ndarray:
-    # p + R * t  (GNSS antenna position)
-    return xi.T.w().as_vector() + xi.T.R().as_matrix() @ xi.t
+# =============================================================================
+# EQUIVARIANT MEASUREMENT MODELS (논문 형식 - Pure Implementation)
+# =============================================================================
 
-def measurePosAndBias(xi: State) -> np.ndarray:
-    # Return [p_GNSS; b_mu] (here b_mu not used; keep zeros placeholder)
-    b_mu = np.zeros((3,1))
-    return np.vstack((measurePos(xi), b_mu))
+def measurePos_equivariant(xi: State, y_raw: np.ndarray) -> np.ndarray:
+    """
+    Equivariant position measurement following paper Eq. (3)
+    hp(ξ) = G R_I^T (G π - (G p_I + G R_I I t)) ∈ Np
+    
+    Args:
+        xi: Current state estimate
+        y_raw: Raw GNSS position measurement G π
+    
+    Returns:
+        Equivariant output (right-invariant error form)
+    """
+    R_G_I = xi.T.R().as_matrix()  # G R_I
+    p_G_I = xi.T.w().as_vector()  # G p_I 
+    t_I = xi.t  # I t
+    
+    # Ensure y_raw is column vector
+    y_raw = np.asarray(y_raw).reshape(3, 1) if y_raw.ndim == 1 else y_raw
+    
+    # GNSS antenna position: G π = G p_I + G R_I I t
+    predicted_gnss_pos = p_G_I.reshape(3, 1) + R_G_I @ t_I.reshape(3, 1)
+    
+    # Equivariant form: G R_I^T (G π - predicted)
+    return R_G_I.T @ (y_raw - predicted_gnss_pos)
 
-
-
-# Magnetometer measurement (magnetic north in {G} observed in magnetometer frame {M})
-# y_m = S^T * R^T * m_G
-def measureMag(xi: State, m_G: 'np.ndarray') -> 'np.ndarray':
-    if m_G is None:
-        raise ValueError("m_G (magnetic field in {G}) must be provided")
-    return xi.S.inv().as_matrix() @ xi.T.R().inv().as_matrix() @ m_G
-
-
-# GNSS velocity measurement (antenna point) in world frame {G}
-# y_v = v + R * (omega_body × t)
-# omega_body is derived from IMU input (u.w) optionally minus gyro bias b_w
-def measureVel(xi: State, u: 'InputSpace', subtract_bias: bool = True) -> 'np.ndarray':
-    from pylie import SO3
-    R = xi.T.R().as_matrix()
-    v = xi.T.x().as_vector()
-    t = xi.t
+def measureVel_equivariant(xi: State, u: 'InputSpace', y_raw: np.ndarray, 
+                          subtract_bias: bool = True) -> np.ndarray:
+    """
+    Equivariant velocity measurement following paper Eq. (4)
+    hv(ξ) = G R_I^T (G ν - (G v_I + G R_I I ω∧ I t)) ∈ Nv
+    
+    Args:
+        xi: Current state estimate
+        u: Input (for ω)
+        y_raw: Raw GNSS velocity measurement G ν
+        subtract_bias: Whether to subtract gyro bias
+    
+    Returns:
+        Equivariant output (right-invariant error form)
+    """
+    R_G_I = xi.T.R().as_matrix()  # G R_I
+    v_G_I = xi.T.x().as_vector()  # G v_I
+    t_I = xi.t  # I t
+    
+    # Ensure y_raw is column vector
+    y_raw = np.asarray(y_raw).reshape(3, 1) if y_raw.ndim == 1 else y_raw
+    
+    # Angular velocity (optionally bias-corrected)
     omega = SO3.vee(u.w).reshape(3,1)
     if subtract_bias:
         omega = omega - xi.b[0:3, 0:1]
-    omega_cross_t = SO3.wedge(omega) @ t
-    return v + R @ omega_cross_t
+    
+    # GNSS velocity with lever arm effect: G ν = G v_I + G R_I (I ω ∧ I t)
+    omega_cross_t = SO3.wedge(omega) @ t_I.reshape(3, 1)
+    predicted_gnss_vel = v_G_I.reshape(3, 1) + R_G_I @ omega_cross_t
+    
+    # Equivariant form: G R_I^T (G ν - predicted)
+    return R_G_I.T @ (y_raw - predicted_gnss_vel)
+
+def measureMag_equivariant(xi: State, m_G: np.ndarray, y_raw: np.ndarray) -> np.ndarray:
+    """
+    Equivariant magnetometer measurement following paper Eq. (2)
+    Modified for right-invariant error: uses the innovation approach
+    
+    Args:
+        xi: Current state estimate  
+        m_G: Magnetic field vector in global frame
+        y_raw: Raw magnetometer measurement in magnetometer frame
+        
+    Returns:
+        Equivariant output (magnetometer frame)
+    """
+    # Ensure vectors are column format
+    m_G = np.asarray(m_G).reshape(3, 1) if m_G.ndim == 1 else m_G
+    y_raw = np.asarray(y_raw).reshape(3, 1) if y_raw.ndim == 1 else y_raw
+    
+    # Predicted measurement: M m = I R_M^T G R_I^T G m
+    R_G_I = xi.T.R().as_matrix()  # G R_I
+    R_I_M = xi.S.as_matrix()      # I R_M
+    
+    predicted_mag = R_I_M.T @ R_G_I.T @ m_G
+    
+    # Innovation in magnetometer frame (equivariant)
+    return y_raw - predicted_mag
+
 # get input space from vector form
 def input_from_vector(vec) -> "InputSpace":
     if not isinstance(vec, np.ndarray):

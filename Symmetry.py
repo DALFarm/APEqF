@@ -105,7 +105,7 @@ def SE3LeftJacobian(se3vec: np.ndarray) -> np.ndarray:
     if not isinstance(se3vec, np.ndarray):
         raise TypeError
     if se3vec.shape != (6, 1):
-        raise ValueError
+        raise ValueError("arr must be (6,1)")
     phi = se3vec[0:3, 0:1]
     if np.isclose(np.linalg.norm(phi), 0.0):
         return np.eye(6) + 0.5 * SE3.adjoint(se3vec)
@@ -120,7 +120,7 @@ def SE23LeftJacobian(se23vec: np.ndarray) -> np.ndarray:
     if not isinstance(se23vec, np.ndarray):
         raise TypeError
     if se23vec.shape != (9, 1):
-        raise ValueError
+        raise ValueError("se23vec must be (9,1)")
     phi = se23vec[0:3, 0:1]
     rho = se23vec[3:6, 0:1]
     psi = se23vec[6:9, 0:1]
